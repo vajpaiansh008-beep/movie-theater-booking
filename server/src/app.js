@@ -1,9 +1,23 @@
 import express from "express";
+import path from "path";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
 import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
+
+//API Routes from src/routes
+
+import authRoutes from "./routes/auth.routes.js";
+import adminRoutes from "./routes/admin.routes.js";
+import movieRoutes from "./routes/movie.routes.js";
+import adminTheaterRoutes from "./routes/adminTheater.routes.js";
+import adminScreenRoutes from "./routes/adminScreen.routes.js";
+import adminSeatRoutes from "./routes/adminSeat.routes.js";
+import adminShowRoutes from "./routes/adminShow.routes.js";
+
+import seatLockRoutes from "./routes/seatLock.routes.js";
+import bookingRoutes from "./routes/booking.routes.js";
 
 const app = express();
 
@@ -17,6 +31,9 @@ app.use(
     credentials: true,
   }),
 );
+
+// multer
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // Parse incoming JSON requests
 app.use(express.json({ limit: "10kb" }));
@@ -54,6 +71,23 @@ app.get("/api/v1/health", (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
+
+// Authentication routes
+app.use("/api/v1/auth", authRoutes);
+
+// Movies Routes
+app.use("/api/v1/movies", movieRoutes);
+
+// Admin Routes
+app.use("/api/v1/admin", adminRoutes);
+app.use("/api/v1/admin/theaters", adminTheaterRoutes);
+app.use("/api/v1/admin/screens", adminScreenRoutes);
+app.use("/api/v1/admin/seats", adminSeatRoutes);
+app.use("/api/v1/admin/shows", adminShowRoutes);
+
+// Seat Lock
+app.use("/api/v1/seat-locks", seatLockRoutes);
+app.use("/api/v1/bookings", bookingRoutes);
 
 // Root endpoint
 app.get("/", (req, res) => {
