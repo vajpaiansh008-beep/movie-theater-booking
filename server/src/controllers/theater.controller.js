@@ -1,6 +1,10 @@
 import Theater from "../models/theater.model.js";
 import mongoose from "mongoose";
-import { createTheaterSchema, updateTheaterSchema } from "../utils/theater.validation.js";
+import {
+  createTheaterSchema,
+  updateTheaterSchema,
+} from "../utils/theater.validation.js";
+import Screen from "../models/screen.model.js";
 
 export const createTheater = async (req, res, next) => {
   try {
@@ -38,7 +42,6 @@ export const createTheater = async (req, res, next) => {
     next(error);
   }
 };
-
 
 export const getAllTheaters = async (req, res, next) => {
   try {
@@ -121,7 +124,7 @@ export const updateTheater = async (req, res, next) => {
     const theater = await Theater.findByIdAndUpdate(
       req.params.id,
       { $set: result.data },
-      { new: true, runValidators: true }
+      { new: true, runValidators: true },
     );
 
     if (!theater) {
@@ -150,14 +153,16 @@ export const updateTheater = async (req, res, next) => {
 
 export const deleteTheater = async (req, res, next) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
         message: "Invalid theater ID",
       });
     }
 
-    const theater = await Theater.findByIdAndDelete(req.params.id);
+    const theater = await Theater.findById(id);
 
     if (!theater) {
       return res.status(404).json({
@@ -165,6 +170,19 @@ export const deleteTheater = async (req, res, next) => {
         message: "Theater not found",
       });
     }
+
+    // Prevent deleting a theater that still has screens.
+    const existingScreen = await Screen.exists({ theater: theater._id });
+
+    if (existingScreen) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "This theater cannot be deleted because it still has screens. Remove or reassign its screens first.",
+      });
+    }
+
+    await theater.deleteOne();
 
     return res.status(200).json({
       success: true,

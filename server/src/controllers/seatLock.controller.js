@@ -199,6 +199,7 @@ export const releaseSeats = async (req, res, next) => {
         status: "locked",
         lockedBy: req.user._id,
         lockToken,
+        lockExpiresAt: { $gt: new Date() },
       },
       {
         $set: {

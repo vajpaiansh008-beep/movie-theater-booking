@@ -10,14 +10,21 @@ import {
 
 const router = Router();
 
-router.use(authenticate, authorizeRoles("admin"));
+// Public: list scheduled shows
+router.get("/", getAllShows);
 
-router.route("/").post(createShow).get(getAllShows);
-router.post("/:id/initialize-seats", initializeShowSeats);
+// Admin only: create shows
+router.post("/", authenticate, authorizeRoles("admin"), createShow);
+
+// Admin only: initialize seats
+router.post(
+  "/:id/initialize-seats",
+  authenticate,
+  authorizeRoles("admin"),
+  initializeShowSeats,
+);
+
+// Seat availability can be viewed by customers
 router.get("/:id/seats", getShowSeatAvailability);
-
-router.route("/")
-  .post(createShow)
-  .get(getAllShows);
 
 export default router;

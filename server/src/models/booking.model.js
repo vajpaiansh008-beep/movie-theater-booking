@@ -33,6 +33,11 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    reservationExpiresAt: {
+      type: Date,
+      required: false,
+      index: true,
+    },
 
     totalAmount: {
       type: Number,
@@ -50,6 +55,25 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       enum: ["pending", "paid", "failed", "refunded"],
       default: "pending",
+    },
+
+    razorpayOrderId: {
+      type: String,
+      default: null,
+      unique: true,
+      sparse: true,
+    },
+
+    razorpayPaymentId: {
+      type: String,
+      default: null,
+    },
+
+    currency: {
+      type: String,
+      enum: ["INR"],
+      default: "INR",
+      required: true,
     },
   },
   { timestamps: true },

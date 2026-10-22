@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import { fileURLToPath } from "node:url";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
@@ -16,13 +17,20 @@ import adminScreenRoutes from "./routes/adminScreen.routes.js";
 import adminSeatRoutes from "./routes/adminSeat.routes.js";
 import adminShowRoutes from "./routes/adminShow.routes.js";
 
+import publicShowRoutes from "./routes/publicShow.routes.js";
+
 import seatLockRoutes from "./routes/seatLock.routes.js";
 import bookingRoutes from "./routes/booking.routes.js";
+import paymentRoutes from "./routes/payment.routes.js";
 
 const app = express();
 
 // Security HTTP headers
-app.use(helmet());
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
 
 // CORS configuration
 app.use(
@@ -33,7 +41,13 @@ app.use(
 );
 
 // multer
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// If this file is server/src/app.js:
+const uploadsPath = path.resolve(__dirname, "../uploads");
+
+app.use("/uploads", express.static(uploadsPath));
 
 // Parse incoming JSON requests
 app.use(express.json({ limit: "10kb" }));
@@ -85,9 +99,13 @@ app.use("/api/v1/admin/screens", adminScreenRoutes);
 app.use("/api/v1/admin/seats", adminSeatRoutes);
 app.use("/api/v1/admin/shows", adminShowRoutes);
 
+// Public routes
+app.use("/api/v1/shows", publicShowRoutes);
+
 // Seat Lock
 app.use("/api/v1/seat-locks", seatLockRoutes);
 app.use("/api/v1/bookings", bookingRoutes);
+app.use("/api/v1/payments", paymentRoutes);
 
 // Root endpoint
 app.get("/", (req, res) => {

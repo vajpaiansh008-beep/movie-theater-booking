@@ -18,11 +18,9 @@ import { sendPhoneOtp } from "../utils/phoneOtpDelivery.js";
 import { timingSafeEqual } from "node:crypto";
 
 // Signup: create an unverified account and send a phone OTP.
-export const signup = async (req, res, next) => {
-  let createdUser;
 
+export const signup = async (req, res, next) => {
   try {
-    // 1. Validate request data
     const result = signupSchema.safeParse(req.body);
 
     if (!result.success) {
@@ -39,7 +37,6 @@ export const signup = async (req, res, next) => {
     const { name, email, password, phoneNumber, whatsappTicketOptIn } =
       result.data;
 
-    // 2. Check for an existing email or phone number
     const existingUser = await User.findOne({
       $or: [{ email }, { phoneNumber }],
     });
@@ -51,11 +48,9 @@ export const signup = async (req, res, next) => {
       });
     }
 
-    // 3. Hash the password
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // 4. Create the unverified account
-    createdUser = await User.create({
+    const user = await User.create({
       name,
       email,
       passwordHash,
@@ -65,63 +60,20 @@ export const signup = async (req, res, next) => {
       role: "customer",
     });
 
-    // 5. Generate an OTP and store only its hash
-    const code = generateOtp();
-
-    await OTP.findOneAndUpdate(
-      {
-        user: createdUser._id,
-        purpose: "signup_phone",
-      },
-      {
-        $set: {
-          codeHash: hashOtp(createdUser._id.toString(), code),
-          expiresAt: new Date(Date.now() + 5 * 60 * 1000),
-          attempts: 0,
-          consumedAt: null,
-        },
-        $setOnInsert: {
-          user: createdUser._id,
-          purpose: "signup_phone",
-        },
-      },
-      {
-        upsert: true,
-        new: true,
-        runValidators: true,
-      },
-    );
-
-    // 6. Deliver the OTP using the development adapter
-    await sendPhoneOtp({ phoneNumber, code });
-
-    // 7. Ask the user to verify their phone
     return res.status(201).json({
       success: true,
-      message: "Account created. Verify your phone number to continue.",
+      message: "Account created successfully. You can now log in.",
       data: {
         user: {
-          id: createdUser._id,
-          name: createdUser.name,
-          email: createdUser.email,
-          phoneNumber: createdUser.phoneNumber,
-          phoneVerified: createdUser.phoneVerified,
-          whatsappTicketOptIn: createdUser.whatsappTicketOptIn,
+          id: user._id,
+          name: user.name,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          whatsappTicketOptIn: user.whatsappTicketOptIn,
         },
       },
     });
   } catch (error) {
-    // Remove a newly created pending account if setup fails.
-    // If OTP delivery fails, the user can retry signup.
-    if (createdUser) {
-      await OTP.deleteOne({
-        user: createdUser._id,
-        purpose: "signup_phone",
-      }).catch(() => {});
-
-      await User.deleteOne({ _id: createdUser._id }).catch(() => {});
-    }
-
     if (error.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -281,13 +233,6 @@ export const login = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
-      });
-    }
-
-    if (!user.phoneVerified) {
-      return res.status(403).json({
-        success: false,
-        message: "Please verify your phone number before logging in",
       });
     }
 
