@@ -5,6 +5,10 @@ import {
   createScreenSchema,
   updateScreenSchema,
 } from "../utils/screen.validation.js";
+import Seat from "../models/seat.model.js";
+import Show from "../models/show.model.js";
+import ShowSeat from "../models/showSeat.model.js";
+import Booking from "../models/booking.model.js";
 
 export const createScreen = async (req, res, next) => {
   try {
@@ -174,14 +178,16 @@ export const updateScreen = async (req, res, next) => {
 
 export const deleteScreen = async (req, res, next) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.id)) {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         success: false,
         message: "Invalid screen ID",
       });
     }
 
-    const screen = await Screen.findByIdAndDelete(req.params.id);
+    const screen = await Screen.findById(id);
 
     if (!screen) {
       return res.status(404).json({
@@ -189,6 +195,48 @@ export const deleteScreen = async (req, res, next) => {
         message: "Screen not found",
       });
     }
+
+    // Find every physical seat and show associated with this screen.
+    const [seats, shows] = await Promise.all([
+      Seat.find({ screen: screen._id }).select("_id").lean(),
+      Show.find({ screen: screen._id }).select("_id").lean(),
+    ]);
+
+    const seatIds = seats.map((seat) => seat._id);
+    const showIds = shows.map((show) => show._id);
+
+    // Check for related show-seat records and booking history.
+    const [showSeatCount, bookingCount] = await Promise.all([
+      ShowSeat.countDocuments({
+        $or: [{ seat: { $in: seatIds } }, { show: { $in: showIds } }],
+      }),
+
+      Booking.countDocuments({
+        $or: [{ seats: { $in: seatIds } }, { show: { $in: showIds } }],
+      }),
+    ]);
+
+    // Never delete a screen while dependent records exist.
+    if (
+      seats.length > 0 ||
+      shows.length > 0 ||
+      showSeatCount > 0 ||
+      bookingCount > 0
+    ) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "This screen cannot be deleted because it has associated seats, shows, or booking records. Preserve the existing data and deactivate the screen instead.",
+        dependencies: {
+          seats: seats.length,
+          shows: shows.length,
+          showSeats: showSeatCount,
+          bookings: bookingCount,
+        },
+      });
+    }
+
+    await screen.deleteOne();
 
     return res.status(200).json({
       success: true,

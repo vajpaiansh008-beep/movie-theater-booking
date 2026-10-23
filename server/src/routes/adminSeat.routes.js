@@ -4,6 +4,7 @@ import { authorizeRoles } from "../middleware/authorizeRoles.js";
 import {
   createSeatsBulk,
   getScreenSeats,
+  deleteSeatsBulk
 } from "../controllers/seat.controller.js";
 
 const router = Router();
@@ -11,6 +12,7 @@ const router = Router();
 router.use(authenticate, authorizeRoles("admin"));
 
 router.post("/bulk", createSeatsBulk);
+router.delete("/bulk", deleteSeatsBulk);
 router.get("/", getScreenSeats);
 
 export default router;

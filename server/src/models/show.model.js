@@ -1,4 +1,3 @@
-
 import mongoose from "mongoose";
 
 const showSchema = new mongoose.Schema(
@@ -58,6 +57,12 @@ const showSchema = new mongoose.Schema(
       default: "scheduled",
     },
 
+    paymentActivityVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -66,7 +71,7 @@ const showSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 // Supports finding shows scheduled on a screen.

@@ -193,6 +193,119 @@ export const getAllShows = async (req, res, next) => {
   }
 };
 
+export const cancelShow = async (req, res, next) => {
+  let session;
+
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid show ID",
+      });
+    }
+
+    session = await mongoose.startSession();
+
+    let cancelledShow = null;
+
+    await session.withTransaction(async () => {
+      const now = new Date();
+
+      // 1. Cancel only a future show that is still scheduled.
+      const show = await Show.findOneAndUpdate(
+        {
+          _id: req.params.id,
+          status: "scheduled",
+          startTime: { $gt: now },
+        },
+        {
+          $set: { status: "cancelled" },
+          $inc: { paymentActivityVersion: 1 },
+        },
+        {
+          returnDocument: "after",
+          runValidators: true,
+          session,
+        },
+      );
+
+      if (!show) {
+        return;
+      }
+
+      // 2. Release only locked seats for this show.
+      // Seats already marked "booked" remain untouched.
+      await ShowSeat.updateMany(
+        {
+          show: show._id,
+          status: "locked",
+        },
+        {
+          $set: {
+            status: "available",
+            lockedBy: null,
+            lockToken: null,
+            lockExpiresAt: null,
+          },
+        },
+        { session },
+      );
+
+      cancelledShow = show;
+    });
+
+    await session.endSession();
+    session = null;
+
+    if (cancelledShow) {
+      return res.status(200).json({
+        success: true,
+        message: "Show cancelled and active seat locks released",
+        data: {
+          show: cancelledShow,
+        },
+      });
+    }
+
+    // 3. Explain why the show could not be cancelled.
+    const existingShow = await Show.findById(req.params.id).select(
+      "_id status startTime",
+    );
+
+    if (!existingShow) {
+      return res.status(404).json({
+        success: false,
+        message: "Show not found",
+      });
+    }
+
+    if (existingShow.status === "cancelled") {
+      return res.status(409).json({
+        success: false,
+        message: "This show is already cancelled",
+      });
+    }
+
+    if (existingShow.startTime <= new Date()) {
+      return res.status(400).json({
+        success: false,
+        message: "A show that has already started cannot be cancelled",
+      });
+    }
+
+    return res.status(409).json({
+      success: false,
+      message: "Only scheduled shows can be cancelled",
+    });
+  } catch (error) {
+    if (session) {
+      await session.endSession();
+    }
+
+    return next(error);
+  }
+};
+
 export const initializeShowSeats = async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {

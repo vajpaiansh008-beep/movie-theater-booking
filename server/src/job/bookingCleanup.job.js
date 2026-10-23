@@ -1,27 +1,41 @@
 import { cleanupExpiredBookings } from "../services/bookingCleanup.service.js";
 
+const CLEANUP_INTERVAL_MS = 60 * 1000;
+
 let isRunning = false;
+let intervalId = null;
+
+async function runBookingCleanup() {
+  // Prevent overlapping cleanup executions.
+  if (isRunning) return;
+
+  isRunning = true;
+
+  try {
+    await cleanupExpiredBookings();
+  } catch (error) {
+    console.error(
+      "[Booking Cleanup] Failed:",
+      error instanceof Error ? error.message : error,
+    );
+  } finally {
+    isRunning = false;
+  }
+}
 
 export function startBookingCleanupJob() {
-  console.log("Booking cleanup scheduler started");
+  // Prevent accidentally starting multiple intervals.
+  if (intervalId) {
+    return intervalId;
+  }
 
-  const interval = setInterval(async () => {
-    if (isRunning) return;
+  console.log(
+    `[Booking Cleanup] Scheduler started (every ${CLEANUP_INTERVAL_MS / 1000}s)`,
+  );
 
-    console.log("Booking cleanup check running:", new Date().toLocaleString());
+  intervalId = setInterval(() => {
+    void runBookingCleanup();
+  }, CLEANUP_INTERVAL_MS);
 
-    isRunning = true;
-
-    try {
-      const result = await cleanupExpiredBookings();
-
-      console.log("Booking cleanup result:", result);
-    } catch (error) {
-      console.error("Booking cleanup error:", error.message);
-    } finally {
-      isRunning = false;
-    }
-  }, 60 * 1000);
-
-  return interval;
+  return intervalId;
 }

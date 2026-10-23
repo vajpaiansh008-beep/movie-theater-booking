@@ -11,6 +11,9 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import AdminDashboard from "./pages/admin/AdminDashboard";
 import AdminMovies from "./pages/admin/AdminMovies";
 import AdminTheaters from "./pages/admin/AdminTheaters";
+import AdminScreens from "./pages/admin/AdminScreens";
+import AdminSeatLayout from "./pages/admin/AdminSeatLayout";
+import AdminShows from "./pages/admin/AdminShows";
 
 export default function App() {
   return (
@@ -44,6 +47,30 @@ export default function App() {
         element={
           <ProtectedRoute allowedRoles={["admin"]}>
             <AdminTheaters />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/screens"
+        element={
+          <ProtectedRoute allowedRoles={["admin"]}>
+            <AdminScreens />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/seat-layout"
+        element={
+          <ProtectedRoute allowedRoles={["admin"]}>
+            <AdminSeatLayout />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/shows"
+        element={
+          <ProtectedRoute allowedRoles={["admin"]}>
+            <AdminShows />
           </ProtectedRoute>
         }
       />

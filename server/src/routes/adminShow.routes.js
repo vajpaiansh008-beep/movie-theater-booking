@@ -6,6 +6,7 @@ import {
   getAllShows,
   initializeShowSeats,
   getShowSeatAvailability,
+  cancelShow,
 } from "../controllers/show.controller.js";
 
 const router = Router();
@@ -15,6 +16,10 @@ router.get("/", getAllShows);
 
 // Admin only: create shows
 router.post("/", authenticate, authorizeRoles("admin"), createShow);
+
+// Admin only: cancel show
+
+router.patch("/:id/cancel", authenticate, authorizeRoles("admin"), cancelShow);
 
 // Admin only: initialize seats
 router.post(

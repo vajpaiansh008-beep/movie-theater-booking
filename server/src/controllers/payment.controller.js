@@ -27,13 +27,10 @@ export const createPaymentOrder = async (req, res, next) => {
   try {
     const now = new Date();
 
+    // 1. Preflight: validate the show before creating a Razorpay order.
     const show = await Show.findById(showId).populate({
       path: "screen",
-      select: "status theater",
-      populate: {
-        path: "theater",
-        select: "status",
-      },
+      populate: { path: "theater" },
     });
 
     if (!show) {
@@ -57,6 +54,7 @@ export const createPaymentOrder = async (req, res, next) => {
       });
     }
 
+    // 2. Validate the customer's seat locks.
     const lockedSeats = await ShowSeat.find({
       show: show._id,
       seat: { $in: seatIds },
@@ -88,20 +86,21 @@ export const createPaymentOrder = async (req, res, next) => {
       });
     }
 
+    // 3. Calculate the amount on the server.
     const totalAmount = lockedSeats.reduce((total, item) => {
       const price = show.pricing?.[item.seat.category];
 
       if (typeof price !== "number" || !Number.isFinite(price) || price < 0) {
-        throw Object.assign(
-          new Error(`Valid pricing is missing for ${item.seat.category}`),
-          { status: 400 },
+        const error = new Error(
+          `Valid pricing is missing for ${item.seat.category}`,
         );
+        error.status = 400;
+        throw error;
       }
 
       return total + price;
     }, 0);
 
-    // Ticket prices are stored in rupees; Razorpay expects paise.
     const amountInPaise = Math.round(totalAmount * 100);
 
     if (!Number.isSafeInteger(amountInPaise) || amountInPaise < 100) {
@@ -111,17 +110,11 @@ export const createPaymentOrder = async (req, res, next) => {
       });
     }
 
-    const reservationExpiresAt = lockedSeats.reduce(
-      (earliest, item) =>
-        item.lockExpiresAt < earliest ? item.lockExpiresAt : earliest,
-      lockedSeats[0].lockExpiresAt,
-    );
-
     const bookingCode = `BK-${Date.now()}-${randomBytes(4)
       .toString("hex")
       .toUpperCase()}`;
 
-    // Create the gateway order before saving the pending booking.
+    // 4. Create the Razorpay order OUTSIDE the MongoDB transaction.
     const order = await razorpay.orders.create({
       amount: amountInPaise,
       currency: "INR",
@@ -134,20 +127,148 @@ export const createPaymentOrder = async (req, res, next) => {
       },
     });
 
-    const booking = await Booking.create({
-      bookingCode,
-      user: userId,
-      show: show._id,
-      seats: seatIds,
-      lockToken,
-      reservationExpiresAt,
-      totalAmount,
-      status: "pending",
-      paymentStatus: "pending",
-      razorpayOrderId: order.id,
-      currency: "INR",
-    });
+    // 5. Revalidate and coordinate with cancellation transactionally.
+    const session = await mongoose.startSession();
 
+    let booking;
+
+    try {
+      await session.withTransaction(async () => {
+        const transactionNow = new Date();
+
+        // This is a conditional WRITE to the Show document.
+        // cancelShow also writes to this document, so concurrent
+        // transactions can conflict instead of silently racing.
+        const currentShow = await Show.findOneAndUpdate(
+          {
+            _id: showId,
+            status: "scheduled",
+            startTime: { $gt: transactionNow },
+          },
+          {
+            $inc: { paymentActivityVersion: 1 },
+          },
+          {
+            returnDocument: "after",
+            session,
+            runValidators: true,
+          },
+        ).populate({
+          path: "screen",
+          select: "status theater",
+          populate: {
+            path: "theater",
+            select: "status",
+          },
+        });
+
+        if (
+          !currentShow ||
+          !currentShow.screen ||
+          currentShow.screen.status !== "active" ||
+          !currentShow.screen.theater ||
+          currentShow.screen.theater.status !== "active"
+        ) {
+          const error = new Error(
+            "This show is no longer available. Please select another show.",
+          );
+          error.status = 409;
+          throw error;
+        }
+
+        // Recheck every seat lock inside the transaction.
+        const currentSeats = await ShowSeat.find({
+          show: currentShow._id,
+          seat: { $in: seatIds },
+        })
+          .populate("seat", "category status")
+          .session(session);
+
+        const validLocks =
+          currentSeats.length === seatIds.length &&
+          currentSeats.every(
+            (item) =>
+              item.status === "locked" &&
+              item.lockedBy?.toString() === userId.toString() &&
+              item.lockToken === lockToken &&
+              item.lockExpiresAt &&
+              item.lockExpiresAt > transactionNow &&
+              item.seat &&
+              item.seat.status === "active",
+          );
+
+        if (!validLocks) {
+          const error = new Error(
+            "Your seat reservation expired or changed. Please select seats again.",
+          );
+          error.status = 409;
+          throw error;
+        }
+
+        // Recalculate the price in case show pricing changed
+        // while the Razorpay order was being created.
+        const currentTotalAmount = currentSeats.reduce((total, item) => {
+          const price = currentShow.pricing?.[item.seat.category];
+
+          if (
+            typeof price !== "number" ||
+            !Number.isFinite(price) ||
+            price < 0
+          ) {
+            const error = new Error(
+              `Valid pricing is missing for ${item.seat.category}`,
+            );
+            error.status = 400;
+            throw error;
+          }
+
+          return total + price;
+        }, 0);
+
+        const currentAmountInPaise = Math.round(currentTotalAmount * 100);
+
+        if (currentAmountInPaise !== order.amount) {
+          const error = new Error(
+            "Show pricing changed. Please restart the payment process.",
+          );
+          error.status = 409;
+          throw error;
+        }
+
+        // Keep the reservation expiry aligned with the current locks.
+        const reservationExpiresAt = currentSeats.reduce(
+          (earliest, item) =>
+            item.lockExpiresAt < earliest ? item.lockExpiresAt : earliest,
+          currentSeats[0].lockExpiresAt,
+        );
+
+        // 6. Create the pending booking transactionally.
+        const [createdBooking] = await Booking.create(
+          [
+            {
+              bookingCode,
+              user: userId,
+              show: currentShow._id,
+              seats: seatIds,
+              lockToken,
+              reservationExpiresAt,
+              totalAmount: currentTotalAmount,
+              status: "pending",
+              paymentStatus: "pending",
+              razorpayOrderId: order.id,
+              currency: "INR",
+            },
+          ],
+          { session },
+        );
+
+        booking = createdBooking;
+      });
+    } finally {
+      await session.endSession();
+    }
+
+    // 7. Return the order and booking details.
     return res.status(201).json({
       success: true,
       message: "Payment order created",
@@ -161,7 +282,7 @@ export const createPaymentOrder = async (req, res, next) => {
         totalAmount: booking.totalAmount,
         status: booking.status,
         paymentStatus: booking.paymentStatus,
-        expiresAt: reservationExpiresAt,
+        expiresAt: booking.reservationExpiresAt,
       },
     });
   } catch (error) {
@@ -175,6 +296,8 @@ export const createPaymentOrder = async (req, res, next) => {
     return next(error);
   }
 };
+
+//session.withTransaction
 
 export const verifyPayment = async (req, res, next) => {
   const validation = verifyPaymentSchema.safeParse(req.body);
@@ -196,7 +319,7 @@ export const verifyPayment = async (req, res, next) => {
   const userId = req.user._id;
 
   try {
-    // Find only a booking owned by this authenticated user.
+    // 1. Find the booking belonging to the authenticated user.
     const booking = await Booking.findOne({
       user: userId,
       razorpayOrderId: orderId,
@@ -209,7 +332,7 @@ export const verifyPayment = async (req, res, next) => {
       });
     }
 
-    // Make repeated verification requests safe.
+    // 2. Make repeated successful verification requests idempotent.
     if (
       booking.status === "confirmed" &&
       booking.paymentStatus === "paid" &&
@@ -234,7 +357,7 @@ export const verifyPayment = async (req, res, next) => {
       });
     }
 
-    // Verify the signature using the server-side API secret.
+    // 3. Verify the Razorpay signature.
     const expectedSignature = createHmac(
       "sha256",
       process.env.RAZORPAY_KEY_SECRET,
@@ -255,7 +378,7 @@ export const verifyPayment = async (req, res, next) => {
       });
     }
 
-    // Independently verify payment details with Razorpay.
+    // 4. Independently verify payment details with Razorpay.
     const payment = await razorpay.payments.fetch(paymentId);
 
     if (
@@ -277,6 +400,7 @@ export const verifyPayment = async (req, res, next) => {
       });
     }
 
+    // 5. Coordinate payment confirmation with show cancellation.
     const session = await mongoose.startSession();
 
     let result;
@@ -301,7 +425,69 @@ export const verifyPayment = async (req, res, next) => {
 
         const now = new Date();
 
-        // All seats must still belong to this user's active lock.
+        // Write to the same Show document cancellation updates.
+        // This creates a write conflict when concurrent transactions
+        // try to modify the same show.
+        const currentShow = await Show.findOneAndUpdate(
+          {
+            _id: currentBooking.show,
+            status: "scheduled",
+            startTime: { $gt: now },
+          },
+          {
+            $inc: { paymentActivityVersion: 1 },
+          },
+          {
+            returnDocument: "after",
+            session,
+            runValidators: true,
+          },
+        );
+
+        if (!currentShow) {
+          const showState = await Show.findById(currentBooking.show)
+            .select("status startTime")
+            .session(session);
+
+          // Payment has already been captured.
+          // Preserve its record for refund/reconciliation.
+          currentBooking.status =
+            showState?.status === "cancelled" ? "cancelled" : "expired";
+
+          currentBooking.paymentStatus = "paid";
+          currentBooking.razorpayPaymentId = paymentId;
+
+          await currentBooking.save({ session });
+
+          // Release only locks still belonging to this reservation.
+          await ShowSeat.updateMany(
+            {
+              show: currentBooking.show,
+              seat: { $in: currentBooking.seats },
+              status: "locked",
+              lockedBy: userId,
+              lockToken: currentBooking.lockToken,
+            },
+            {
+              $set: {
+                status: "available",
+                lockedBy: null,
+                lockExpiresAt: null,
+                lockToken: null,
+              },
+            },
+            { session },
+          );
+
+          result = {
+            reservationLost: true,
+            bookingStatus: currentBooking.status,
+          };
+
+          return;
+        }
+
+        // 6. Verify that every seat is still locked for this booking.
         const eligibleSeats = await ShowSeat.find({
           show: currentBooking.show,
           seat: { $in: currentBooking.seats },
@@ -312,18 +498,41 @@ export const verifyPayment = async (req, res, next) => {
         }).session(session);
 
         if (eligibleSeats.length !== currentBooking.seats.length) {
-          // Payment was captured, but the reservation was lost.
-          // Do not sell seats that may now belong to another customer.
           currentBooking.status = "expired";
           currentBooking.paymentStatus = "paid";
           currentBooking.razorpayPaymentId = paymentId;
 
           await currentBooking.save({ session });
 
-          result = { reservationLost: true };
+          // Release any remaining locks that still match this booking.
+          await ShowSeat.updateMany(
+            {
+              show: currentBooking.show,
+              seat: { $in: currentBooking.seats },
+              status: "locked",
+              lockedBy: userId,
+              lockToken: currentBooking.lockToken,
+            },
+            {
+              $set: {
+                status: "available",
+                lockedBy: null,
+                lockExpiresAt: null,
+                lockToken: null,
+              },
+            },
+            { session },
+          );
+
+          result = {
+            reservationLost: true,
+            bookingStatus: currentBooking.status,
+          };
+
           return;
         }
 
+        // 7. Atomically mark all reserved seats as booked.
         const seatUpdate = await ShowSeat.updateMany(
           {
             show: currentBooking.show,
@@ -352,6 +561,7 @@ export const verifyPayment = async (req, res, next) => {
           throw error;
         }
 
+        // 8. Confirm booking after all seat updates succeed.
         currentBooking.status = "confirmed";
         currentBooking.paymentStatus = "paid";
         currentBooking.razorpayPaymentId = paymentId;
@@ -367,17 +577,16 @@ export const verifyPayment = async (req, res, next) => {
       await session.endSession();
     }
 
+    // 9. Captured payment without a confirmed booking needs reconciliation.
     if (result?.reservationLost) {
-      // The captured payment requires refund/reconciliation.
-      // Never mark these seats booked for this expired reservation.
       return res.status(409).json({
         success: false,
         message:
-          "Payment was captured, but the seat reservation expired. A refund or reconciliation is required.",
+          "Payment was captured, but the booking could not be confirmed. A refund or reconciliation is required.",
         data: {
           bookingId: booking._id,
           paymentStatus: "paid",
-          bookingStatus: "expired",
+          bookingStatus: result.bookingStatus,
         },
       });
     }
