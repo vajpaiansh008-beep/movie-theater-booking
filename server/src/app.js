@@ -33,9 +33,15 @@ app.use(
 );
 
 // CORS configuration
+
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://movie-theater-booking-eosin.vercel.app",
+];
+
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || "http://localhost:5173",
+    origin: allowedOrigins,
     credentials: true,
   }),
 );
